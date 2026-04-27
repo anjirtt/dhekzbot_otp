@@ -11,7 +11,8 @@ import traceback
 from urllib.parse import urljoin
 from datetime import datetime, timedelta
 from telegram.ext import Application, CommandHandler, ContextTypes
-from telegram import Update
+from telegram import Update, InputFile
+import random  # <-- TAMBAHAN BUAT GACHA
 
 # --- CONFIG AREA ---
 YOUR_BOT_TOKEN = "8537047218:AAGDJQz8cKmVJDa7_MXjmTrZtZUGCQCXo9w"  # GANTI INI ANJIR!
@@ -68,6 +69,14 @@ SERVICE_EMOJIS = {
     "Tinder": "🔥", "OnlyFans": "🔞", "Signal": "🔐", "Unknown": "❓"
 }
 
+# --- SOURCES BUAT /getnumbers & /exportnumbers ---
+NUMBER_SOURCES = [
+    {"name": "Quackr", "url": "https://quackr.io/", "selector": "td.number"},
+    {"name": "SMS24", "url": "https://sms24.me/en/numbers", "selector": "a.number-link"},
+    {"name": "ReceiveSMS", "url": "https://receive-sms.cc/", "selector": "div.number-box"},
+    {"name": "ReceiveSMSS", "url": "https://receive-smss.com/", "selector": "span.number"},
+]
+
 # --- JSON HELPERS ---
 def load_json(path, default):
     if not os.path.exists(path):
@@ -105,7 +114,9 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         "✅ *dhekzEdan SMS Bot Ready!*\n"
         "/addchat <id> — Tambah chat ID\n"
         "/remchat <id> — Hapus chat ID\n"
-        "/listchat — List semua chat ID",
+        "/listchat — List semua chat ID\n"
+        "/getnumbers — Gacha 5 nomor segar\n"
+        "/exportnumbers — Kirim file semua nomor",
         parse_mode="Markdown"
     )
 
@@ -145,6 +156,63 @@ async def listchat(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     ids = load_chat_ids()
     msg = "📜 *Chat ID Terdaftar:*\n" + "\n".join(f"`{i}`" for i in ids) if ids else "Kosong!"
     await update.message.reply_text(msg, parse_mode="Markdown")
+
+# --- FITUR BARU: SCRAPE NOMOR SEGAR ---
+async def scrape_fresh_numbers():
+    all_numbers = []
+    headers = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"}
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True, headers=headers) as client:
+        for src in NUMBER_SOURCES:
+            try:
+                r = await client.get(src["url"])
+                soup = BeautifulSoup(r.text, 'html.parser')
+                cells = soup.select(src["selector"])
+                for cell in cells:
+                    num = cell.get_text(strip=True)
+                    if num and re.match(r'^\+?\d{7,15}$', num):
+                        all_numbers.append({"number": num, "source": src["name"]})
+            except:
+                pass
+    # Hapus duplikat
+    seen = set()
+    unique = []
+    for n in all_numbers:
+        if n["number"] not in seen:
+            seen.add(n["number"])
+            unique.append(n)
+    return unique
+
+async def getnumbers(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if str(update.effective_user.id) not in ADMIN_CHAT_IDS:
+        return
+    msg = await update.message.reply_text("🔍 Mencari nomor segar...")
+    numbers = await scrape_fresh_numbers()
+    if not numbers:
+        return await msg.edit_text("❌ Gak ada nomor ditemukan.")
+    sample = random.sample(numbers, min(5, len(numbers)))
+    text = "🎲 *5 Nomor Fresh Prioritas*\n\n"
+    for n in sample:
+        text += f"📞 `{n['number']}` — {n['source']}\n"
+    text += "\n_Gunakan buat daftar, lalu pantau OTP via bot._"
+    await msg.edit_text(text, parse_mode="Markdown")
+
+async def exportnumbers(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if str(update.effective_user.id) not in ADMIN_CHAT_IDS:
+        return
+    msg = await update.message.reply_text("📁 Mengumpulkan semua nomor...")
+    numbers = await scrape_fresh_numbers()
+    if not numbers:
+        return await msg.edit_text("❌ Gak ada data.")
+    filename = "fresh_numbers.txt"
+    with open(filename, "w") as f:
+        for n in numbers:
+            f.write(f"{n['number']} [{n['source']}]\n")
+    with open(filename, "rb") as f:
+        await ctx.bot.send_document(chat_id=update.effective_chat.id,
+                                    document=InputFile(f, filename=filename),
+                                    caption=f"📦 {len(numbers)} nomor segar dari {len(NUMBER_SOURCES)} sumber.")
+    os.remove(filename)
+    await msg.delete()
 
 # --- SMS FETCHER ---
 async def fetch_sms(client, headers, csrf_token):
@@ -233,7 +301,15 @@ async def send_msg(ctx, chat_id, msg):
 # --- MAIN JOB ---
 async def check_sms_job(ctx: ContextTypes.DEFAULT_TYPE):
     print(f"\n--- [{datetime.utcnow()}] Cek SMS ---")
-    headers = {'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36'}
+    headers = {
+    'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.5',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Origin': 'https://www.ivasms.com',
+    'Connection': 'keep-alive',
+    'Referer': 'https://www.ivasms.com/login',
+}
     async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
         try:
             # Login
@@ -245,8 +321,9 @@ async def check_sms_job(ctx: ContextTypes.DEFAULT_TYPE):
                 login_data['_token'] = token_input['value']
 
             login_res = await client.post(LOGIN_URL, data=login_data, headers=headers)
-            if "login" in str(login_res.url):
-                print("❌ Login gagal!")
+            if "login" in str(login_res.url) or "Invalid" in login_res.text or login_res.status_code != 200:
+                print(f"❌ Login gagal! Status: {login_res.status_code}, URL: {login_res.url}")
+                print(f"Response snippet: {login_res.text[:300]}")
                 return
             print("✅ Login sukses!")
 
@@ -296,6 +373,8 @@ def main():
     app.add_handler(CommandHandler("addchat", addchat))
     app.add_handler(CommandHandler("remchat", remchat))
     app.add_handler(CommandHandler("listchat", listchat))
+    app.add_handler(CommandHandler("getnumbers", getnumbers))       # <-- BARU
+    app.add_handler(CommandHandler("exportnumbers", exportnumbers)) # <-- BARU
 
     app.job_queue.run_repeating(check_sms_job, interval=POLLING_INTERVAL, first=5)
     print(f"🔄 Cek setiap {POLLING_INTERVAL} detik. Bot online!")
