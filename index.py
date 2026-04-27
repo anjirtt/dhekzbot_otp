@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-import asyncio, re, json, os, traceback, random
+import asyncio, re, json, os, traceback, random, time
 from datetime import datetime, timedelta
 import httpx
 from bs4 import BeautifulSoup
 from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
 from telegram import Update, InputFile, InlineKeyboardButton, InlineKeyboardMarkup
 
-# -------------------- CONFIG --------------------
+# -------------------- CONFIG AREA --------------------
 YOUR_BOT_TOKEN = "8537047218:AAGDJQz8cKmVJDa7_MXjmTrZtZUGCQCXo9w"
 ADMIN_CHAT_IDS = ["8195907276"]
 INITIAL_CHAT_IDS = ["-1003905860336"]
@@ -15,15 +15,31 @@ INITIAL_CHAT_IDS = ["-1003905860336"]
 LOGIN_URL = "https://www.ivasms.com/login"
 BASE_URL = "https://www.ivasms.com/"
 SMS_API_ENDPOINT = "https://www.ivasms.com/portal/sms/received/getsms"
-USERNAME = "caminating.com"
-PASSWORD = "sojit@##"
+USERNAME = "nneeu01@gmail.com"
+PASSWORD = "dhekzEdan"
 
 POLLING_INTERVAL = 15
 STATE_FILE = "processed_sms_ids.json"
 CHAT_IDS_FILE = "chat_ids.json"
 MONITORED_FILE = "monitored_numbers.json"
 
-# -------------------- COUNTRY FLAGS (lengkap) --------------------
+# -------------------- DATA NEGARA & SUMBER --------------------
+TARGET_COUNTRIES = {
+    "us": {"name": "USA", "flag": "🇺🇸", "codes": ["+1"]},
+    "uk": {"name": "UK", "flag": "🇬🇧", "codes": ["+44"]},
+    "in": {"name": "INDIA", "flag": "🇮🇳", "codes": ["+91"]},
+    "id": {"name": "INDONESIA", "flag": "🇮🇩", "codes": ["+62"]},
+    "ca": {"name": "CANADA", "flag": "🇨🇦", "codes": ["+1"]},
+    "br": {"name": "BRAZIL", "flag": "🇧🇷", "codes": ["+55"]},
+}
+
+FALLBACK_NUMBERS = [
+    {"number": "+19292291234", "source": "Fallback-US"},
+    {"number": "+16504068776", "source": "Fallback-US"},
+    {"number": "+447723456789", "source": "Fallback-UK"},
+    {"number": "+12512005248", "source": "Fallback-CA"},
+]
+
 COUNTRY_FLAGS = {
     "Afghanistan": "🇦🇫", "Albania": "🇦🇱", "Algeria": "🇩🇿", "Argentina": "🇦🇷",
     "Australia": "🇦🇺", "Austria": "🇦🇹", "Bahrain": "🇧🇭", "Bangladesh": "🇧🇩",
@@ -61,15 +77,6 @@ SERVICE_EMOJIS = {
     "Tinder": "🔥", "OnlyFans": "🔞", "Signal": "🔐", "Unknown": "❓"
 }
 
-TARGET_COUNTRIES = {
-    "us": {"name": "USA", "flag": "🇺🇸", "codes": ["+1"]},
-    "uk": {"name": "UK", "flag": "🇬🇧", "codes": ["+44"]},
-    "in": {"name": "INDIA", "flag": "🇮🇳", "codes": ["+91"]},
-    "id": {"name": "INDONESIA", "flag": "🇮🇩", "codes": ["+62"]},
-    "ca": {"name": "CANADA", "flag": "🇨🇦", "codes": ["+1"]},
-    "br": {"name": "BRAZIL", "flag": "🇧🇷", "codes": ["+55"]},
-}
-
 # -------------------- JSON HELPERS --------------------
 def load_json(path, default):
     if not os.path.exists(path): return default
@@ -100,51 +107,56 @@ def load_monitored_numbers():
 def save_monitored_numbers(numbers):
     save_json(MONITORED_FILE, numbers)
 
-# -------------------- SCRAPE NOMOR PUBLIK --------------------
+# -------------------- SCRAPER SUPER KEBAL --------------------
 async def scrape_numbers_by_country(country_key):
     all_numbers = []
-    headers = {"User-Agent": "Mozilla/5.0"}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
+    }
     country_info = TARGET_COUNTRIES[country_key]
     codes = country_info["codes"]
 
-    # Quackr
     try:
         url = f"https://quackr.io/numbers/{country_key}"
-        r = await httpx.AsyncClient(timeout=15, headers=headers).get(url)
-        soup = BeautifulSoup(r.text, 'html.parser')
-        for cell in soup.select("td.number, li.number, span.number"):
-            num = cell.get_text(strip=True)
-            if any(num.startswith(c) for c in codes):
-                all_numbers.append({"number": num, "source": "Quackr"})
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True, headers=headers) as client:
+            r = await client.get(url)
+            soup = BeautifulSoup(r.text, 'html.parser')
+            cells = soup.select("td.number, .number, a.number-link, span.number")
+            if cells:
+                for cell in cells:
+                    num = cell.get_text(strip=True)
+                    if any(num.startswith(c) for c in codes) and re.match(r'^\+?\d{7,15}$', num):
+                        all_numbers.append({"number": num, "source": "Quackr"})
+            else:
+                text = soup.get_text()
+                matches = re.findall(r'(\+?\d{7,15})', text)
+                for m in matches:
+                    if any(m.startswith(c) for c in codes):
+                        all_numbers.append({"number": m, "source": "Quackr"})
     except: pass
 
-    # SMS24
     try:
         url = f"https://sms24.me/en/numbers/{country_key}"
-        r = await httpx.AsyncClient(timeout=15, headers=headers).get(url)
-        soup = BeautifulSoup(r.text, 'html.parser')
-        for cell in soup.select("a.number-link, div.number, span.number"):
-            num = cell.get_text(strip=True)
-            if any(num.startswith(c) for c in codes):
-                all_numbers.append({"number": num, "source": "SMS24"})
-    except: pass
-
-    # ReceiveSMS (US/UK/CA only)
-    if country_key in ["us", "uk", "ca"]:
-        try:
-            url = "https://receive-sms.cc/"
-            r = await httpx.AsyncClient(timeout=15, headers=headers).get(url)
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True, headers=headers) as client:
+            r = await client.get(url)
             soup = BeautifulSoup(r.text, 'html.parser')
-            for cell in soup.select("div.number-box, span.number, a.number"):
-                num = cell.get_text(strip=True)
-                if any(num.startswith(c) for c in codes):
-                    all_numbers.append({"number": num, "source": "ReceiveSMS"})
-        except: pass
+            for a in soup.select("a.number-link, .number, span.number"):
+                num = a.get_text(strip=True)
+                if any(num.startswith(c) for c in codes) and re.match(r'^\+?\d{7,15}$', num):
+                    all_numbers.append({"number": num, "source": "SMS24"})
+    except: pass
 
     # Hapus duplikat
     seen = set()
     unique = [n for n in all_numbers if n['number'] not in seen and not seen.add(n['number'])]
-    return unique[:10]
+
+    if not unique:
+        fallback_for_country = [n for n in FALLBACK_NUMBERS if any(n["number"].startswith(c) for c in codes)]
+        if fallback_for_country: return fallback_for_country[:5]
+        return random.sample(FALLBACK_NUMBERS, min(3, len(FALLBACK_NUMBERS)))
+    
+    return unique[:5]
 
 # -------------------- MONITORING SMS PUBLIK --------------------
 async def check_public_sms(number, source):
@@ -174,22 +186,32 @@ async def check_public_sms(number, source):
         except: pass
     return messages
 
-# -------------------- HANDLER COMMANDS --------------------
+# -------------------- TELEGRAM HANDLERS --------------------
+async def menu_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if str(update.effective_user.id) not in ADMIN_CHAT_IDS: return
+    await update.message.reply_text(
+        "📋 *MENU UTAMA*\n\n"
+        "/start — Pilih negara & generate nomor\n"
+        "/monitored — Nomor yg lagi dipantau\n"
+        "/addchat <id> — Tambah grup tujuan\n"
+        "/remchat <id> — Hapus grup tujuan\n"
+        "/listchat — Daftar grup tujuan\n"
+        "/menu — Tampilkan ini\n\n"
+        "_iVasms monitor berjalan otomatis di background._",
+        parse_mode="Markdown"
+    )
+
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if str(update.effective_user.id) not in ADMIN_CHAT_IDS:
-        return await update.message.reply_text("❌ Lu bukan admin, minggir!")
+        return await update.message.reply_text("❌ Lu bukan admin!")
     keyboard = [
-        [InlineKeyboardButton("🇺🇸 USA", callback_data='get_us')],
-        [InlineKeyboardButton("🇬🇧 UK", callback_data='get_uk')],
-        [InlineKeyboardButton("🇮🇳 INDIA", callback_data='get_in')],
-        [InlineKeyboardButton("🇮🇩 INDONESIA", callback_data='get_id')],
-        [InlineKeyboardButton("🇨🇦 CANADA", callback_data='get_ca')],
-        [InlineKeyboardButton("🇧🇷 BRAZIL", callback_data='get_br')],
+        [InlineKeyboardButton("🇺🇸 USA", callback_data='get_us'), InlineKeyboardButton("🇬🇧 UK", callback_data='get_uk')],
+        [InlineKeyboardButton("🇮🇳 INDIA", callback_data='get_in'), InlineKeyboardButton("🇮🇩 INDONESIA", callback_data='get_id')],
+        [InlineKeyboardButton("🇨🇦 CANADA", callback_data='get_ca'), InlineKeyboardButton("🇧🇷 BRAZIL", callback_data='get_br')],
         [InlineKeyboardButton("📁 EXPORT SEMUA", callback_data='export_all')],
     ]
     await update.message.reply_text(
-        "🌍 **PILIH NEGARA UNTUK NOMOR SEGAR:**\n\n"
-        "_Klik tombol di bawah, bot kirim nomor + bisa langsung dimonitor._",
+        "🌍 *PILIH NEGARA UNTUK NOMOR SEGAR:*\n\n_Klik negara untuk dapat 5 nomor._",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode="Markdown"
     )
@@ -237,50 +259,53 @@ async def button_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     data = query.data
 
     if data == "export_all":
+        await query.edit_message_text("📁 Mengumpulkan semua nomor...")
         all_nums = []
         for key in TARGET_COUNTRIES:
             all_nums.extend(await scrape_numbers_by_country(key))
         if not all_nums:
-            return await query.edit_message_text("❌ Gak ada nomor.")
+            return await query.edit_message_text("❌ Tidak ada nomor yang bisa diexport.")
         fname = "all_numbers.txt"
         with open(fname, "w") as f:
             for n in all_nums: f.write(f"{n['number']} [{n['source']}]\n")
         with open(fname, "rb") as f:
             await query.message.reply_document(InputFile(f, filename=fname),
-                                               caption=f"📦 {len(all_nums)} nomor segar.")
+                                               caption=f"📦 {len(all_nums)} nomor.")
         os.remove(fname)
         return
 
     if data.startswith("monitor_"):
-        # Tambahkan nomor ke daftar monitor
-        _, number, source = data.split("_", 2)
-        monitored = load_monitored_numbers()
-        if not any(m['number'] == number for m in monitored):
-            monitored.append({"number": number, "source": source})
-            save_monitored_numbers(monitored)
-            await query.edit_message_text(f"✅ Nomor `{number}` sekarang dimonitor. OTP akan otomatis dikirim.", parse_mode="Markdown")
+        parts = data.split("_", 2)
+        number = parts[1]
+        source = parts[2]
+        monitored_list = load_monitored_numbers()
+        if not any(m['number'] == number for m in monitored_list):
+            monitored_list.append({"number": number, "source": source})
+            save_monitored_numbers(monitored_list)
+            await query.edit_message_text(f"✅ `{number}` dimonitor.", parse_mode="Markdown")
         else:
-            await query.answer("Nomor ini sudah dimonitor.", show_alert=True)
+            await query.answer("Sudah dimonitor.", show_alert=True)
         return
 
-    # Jika bukan monitor, berarti permintaan negara
     country_key = data.split("_")[1]
     country_info = TARGET_COUNTRIES[country_key]
+    await query.edit_message_text(f"🔍 Mencari nomor {country_info['flag']} {country_info['name']}...")
+
     numbers = await scrape_numbers_by_country(country_key)
     if not numbers:
-        return await query.edit_message_text(f"❌ Gak ada nomor untuk {country_info['flag']} {country_info['name']}.")
+        return await query.edit_message_text(
+            f"❌ Gak ada nomor {country_info['flag']} {country_info['name']}.\n"
+            f"_Coba lagi nanti atau pilih negara lain._"
+        )
 
-    sample = random.sample(numbers, min(5, len(numbers)))
     text = f"🎲 *5 Nomor {country_info['flag']} {country_info['name']}*\n\n"
     keyboard = []
-    for n in sample:
+    for n in numbers:
         text += f"📞 `{n['number']}` — {n['source']}\n"
-        # Tombol monitor per nomor
         keyboard.append([InlineKeyboardButton(f"🛰 Monitor {n['number']}", callback_data=f"monitor_{n['number']}_{n['source']}")])
-    text += "\n_Klik tombol di bawah untuk mulai memonitor OTP dari nomor itu._"
+    text += "\n_Klik Monitor untuk mulai pantau OTP._"
 
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode="Markdown")
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 # -------------------- SMS FETCHER (iVasms) --------------------
 async def fetch_ivasms(client, headers, csrf_token):
@@ -387,12 +412,12 @@ async def ivasms_job(ctx: ContextTypes.DEFAULT_TYPE):
             print(f"❌ iVasms job error: {e}")
 
 async def public_monitor_job(ctx: ContextTypes.DEFAULT_TYPE):
-    monitored = load_monitored_numbers()
-    if not monitored: return
+    monitored_list = load_monitored_numbers()
+    if not monitored_list: return
     print(f"\n--- [{datetime.utcnow()}] Public Monitor ---")
     processed = load_processed_ids()
     recipients = load_chat_ids()
-    for item in monitored:
+    for item in monitored_list:
         number = item['number']
         source = item['source']
         sms_list = await check_public_sms(number, source)
@@ -420,15 +445,15 @@ def main():
     print("🚀 dhekzEdan Multi-Source Bot Starting...")
     app = Application.builder().token(YOUR_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("menu", menu_command))
     app.add_handler(CommandHandler("addchat", addchat))
     app.add_handler(CommandHandler("remchat", remchat))
     app.add_handler(CommandHandler("listchat", listchat))
     app.add_handler(CommandHandler("monitored", monitored))
     app.add_handler(CallbackQueryHandler(button_handler))
-    # Jobs
     app.job_queue.run_repeating(ivasms_job, interval=POLLING_INTERVAL, first=5)
-    app.job_queue.run_repeating(public_monitor_job, interval=30, first=10)  # cek nomor publik tiap 30 detik
-    print("🔄 Bot online! iVasms + Public Monitor aktif.")
+    app.job_queue.run_repeating(public_monitor_job, interval=30, first=10)
+    print("🔄 Bot online! Menu: /start /menu /monitored")
     app.run_polling()
 
 if __name__ == "__main__":
