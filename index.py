@@ -364,7 +364,7 @@ async def check_sms_job(ctx: ContextTypes.DEFAULT_TYPE):
 # --- MAIN ---
 def main():
     print("🚀 dhekzEdan SMS Bot Starting...")
-    if not YOUR_BOT_TOKEN or "ISI_TOKEN" in YOUR_BOT_TOKEN:
+    if not YOUR_BOT_TOKEN or "8537047218:AAGDJQz8cKmVJDa7_MXjmTrZtZUGCQCXo9w" in YOUR_BOT_TOKEN:
         print("🔴 GANTI BOT TOKEN DULU ANJIR!")
         return
 
